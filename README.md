@@ -39,6 +39,24 @@ Rafale is a minimal, high-performance blockchain event indexer built specificall
 
 ---
 
+## Design Philosophy
+
+### Why Linea-Only?
+
+By targeting Linea exclusively, Rafale eliminates the abstraction overhead of multi-chain indexers. No generic EVM fallbacks, no reorg recovery logic, no chain-specific edge cases. The result: a smaller codebase, lower memory footprint, and optimizations tailored to Linea's ZK-finality model.
+
+### Finalized State, Not Sequencer State
+
+Rafale indexes **finalized blocks** - data that has been proven on L1 and cannot reorg. This is intentional:
+
+- **Dashboards & Analytics**: Need accurate historical data, not millisecond latency
+- **Accounting Systems**: Require immutable records
+- **Backend APIs**: Serve consistent state to users
+
+For sub-second trading data, query the sequencer directly. For everything else, use Rafale.
+
+---
+
 ## Features
 
 ### v1.0 (Current Target)
