@@ -1,0 +1,49 @@
+# Rafale Configuration Example
+# Copy this file to rafale.yaml and customize for your deployment
+
+# Indexer instance name (used in logs and metrics)
+name: my-indexer
+
+# Target network: linea-mainnet or linea-sepolia
+network: linea-mainnet
+
+# PostgreSQL connection string
+# Can also be set via DATABASE_URL environment variable
+database: "host=localhost port=5432 dbname=rafale user=postgres password=secret sslmode=disable"
+
+# RPC endpoint (optional - defaults to network preset)
+# Can also be set via LINEA_RPC_URL environment variable
+# rpc_url: "https://linea-mainnet.infura.io/v3/YOUR_KEY"
+
+# Server configuration
+server:
+  graphql_port: 8080
+  metrics_port: 9090
+
+# Sync configuration
+sync:
+  batch_size: 1000    # Blocks per batch (reduce for memory-constrained environments)
+  max_retries: 3      # RPC retry attempts
+  retry_delay: "1s"   # Initial retry delay (exponential backoff)
+
+# Contracts to index
+# Key is the contract name (lowercase, used in handler registration)
+contracts:
+  # Example: USDC token on Linea
+  usdc:
+    address: "0x176211869cA2b568f2A7D4EE941E073a821EE1ff"
+    abi: "./abis/erc20.json"
+    start_block: 1000000  # Block to start indexing from
+    events:
+      - Transfer          # Event names must match ABI exactly (case-sensitive)
+      - Approval
+
+  # Example: Add more contracts as needed
+  # weth:
+  #   address: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"
+  #   abi: "./abis/erc20.json"
+  #   start_block: 0
+  #   events:
+  #     - Transfer
+  #     - Deposit
+  #     - Withdrawal

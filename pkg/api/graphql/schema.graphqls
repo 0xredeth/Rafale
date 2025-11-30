@@ -1,0 +1,140 @@
+# Rafale GraphQL Schema
+
+# Scalar types
+scalar Time
+scalar BigInt
+scalar Address
+scalar Hash
+
+# Block information
+type Block {
+  number: BigInt!
+  hash: Hash!
+  timestamp: Time!
+  parentHash: Hash!
+}
+
+# Generic event interface
+interface Event {
+  id: ID!
+  blockNumber: BigInt!
+  txHash: Hash!
+  txIndex: Int!
+  logIndex: Int!
+  timestamp: Time!
+  contract: String!
+  eventName: String!
+}
+
+# Sync status
+type SyncStatus {
+  network: String!
+  chainID: BigInt!
+  currentBlock: BigInt!
+  headBlock: BigInt!
+  lag: BigInt!
+  isSynced: Boolean!
+  lastSyncTime: Time
+}
+
+# Pagination types
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+# Event connection for pagination
+type EventConnection {
+  edges: [EventEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type EventEdge {
+  cursor: String!
+  node: GenericEvent!
+}
+
+# Generic event for dynamic event types
+type GenericEvent implements Event {
+  id: ID!
+  blockNumber: BigInt!
+  txHash: Hash!
+  txIndex: Int!
+  logIndex: Int!
+  timestamp: Time!
+  contract: String!
+  eventName: String!
+  data: JSON!
+}
+
+# JSON scalar for dynamic event data
+scalar JSON
+
+# Filter input for events
+input EventFilter {
+  contract: String
+  eventName: String
+  fromBlock: BigInt
+  toBlock: BigInt
+  fromTime: Time
+  toTime: Time
+}
+
+# Ordering
+enum OrderDirection {
+  ASC
+  DESC
+}
+
+input EventOrder {
+  field: EventOrderField!
+  direction: OrderDirection!
+}
+
+enum EventOrderField {
+  BLOCK_NUMBER
+  TIMESTAMP
+}
+
+# Queries
+type Query {
+  # Get sync status
+  syncStatus: SyncStatus!
+
+  # Get block by number
+  block(number: BigInt!): Block
+
+  # Get latest block
+  latestBlock: Block
+
+  # Query events with filters and pagination
+  events(
+    filter: EventFilter
+    orderBy: EventOrder
+    first: Int
+    after: String
+    last: Int
+    before: String
+  ): EventConnection!
+
+  # Get event by ID
+  event(id: ID!): GenericEvent
+
+  # Get events by transaction hash
+  eventsByTx(txHash: Hash!): [GenericEvent!]!
+}
+
+# Subscriptions for real-time updates
+type Subscription {
+  # Subscribe to new events
+  newEvent(contract: String, eventName: String): GenericEvent!
+
+  # Subscribe to new blocks
+  newBlock: Block!
+
+  # Subscribe to sync status updates
+  syncStatusUpdated: SyncStatus!
+}

@@ -1,0 +1,32 @@
+# gqlgen configuration for Rafale
+
+schema:
+  - schema.graphqls
+
+exec:
+  filename: generated/generated.go
+  package: generated
+
+model:
+  filename: model/models_gen.go
+  package: model
+
+resolver:
+  layout: follow-schema
+  dir: resolver
+  package: resolver
+  filename_template: "{name}.resolvers.go"
+
+models:
+  BigInt:
+    model:
+      - github.com/99designs/gqlgen/graphql.String
+  Address:
+    model:
+      - github.com/99designs/gqlgen/graphql.String
+  Hash:
+    model:
+      - github.com/99designs/gqlgen/graphql.String
+  JSON:
+    model:
+      - github.com/99designs/gqlgen/graphql.Map

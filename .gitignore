@@ -1,0 +1,49 @@
+# Binaries
+rafale
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.html
+coverage/
+
+# Environment files
+.env
+.env.*
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Vendor (if not committing)
+# vendor/
+
+# Temporary files
+tmp/
+*.tmp
+*.log
+
+# Build output
+dist/
+build/
+
+# Empty placeholder directories
+generated/
+
+rafale_blueprint.md
+rafale_ROADMAP.md
+rafale_TECHNICAL_VERIFICATION.md
+rafale.yaml
