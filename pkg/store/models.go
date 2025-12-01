@@ -8,13 +8,14 @@ import (
 
 // BaseEvent contains common fields for all event models.
 // Embed this in your event structs for consistent indexing.
+// Uses composite primary key (timestamp, id) for TimescaleDB hypertable compatibility.
 type BaseEvent struct {
 	ID          uint64    `gorm:"primaryKey;autoIncrement"`
+	Timestamp   time.Time `gorm:"primaryKey;index;not null"` // Must be in PK for TimescaleDB hypertable
 	BlockNumber uint64    `gorm:"index;not null"`
 	TxHash      string    `gorm:"type:varchar(66);index;not null"`
 	TxIndex     uint      `gorm:"not null"`
 	LogIndex    uint      `gorm:"not null"`
-	Timestamp   time.Time `gorm:"index;not null"`
 	CreatedAt   time.Time `gorm:"autoCreateTime"`
 }
 
