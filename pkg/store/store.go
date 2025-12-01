@@ -35,7 +35,8 @@ var (
 
 // Store wraps GORM with TimescaleDB support.
 type Store struct {
-	db *gorm.DB
+	db             *gorm.DB
+	hasTimescaleDB bool
 }
 
 // Config holds database configuration.
@@ -109,7 +110,8 @@ func New(cfg Config) (*Store, error) {
 	}
 
 	if !extExists {
-		log.Warn().Msg("TimescaleDB extension not found - hypertables will not be available")
+		log.Warn().Msg("TimescaleDB not available - using regular PostgreSQL tables")
+		log.Warn().Msg("To enable hypertables: add 'shared_preload_libraries = timescaledb' to postgresql.conf and restart PostgreSQL")
 	} else {
 		log.Info().Msg("TimescaleDB extension detected")
 	}
@@ -119,7 +121,7 @@ func New(cfg Config) (*Store, error) {
 		Int("maxIdleConns", cfg.MaxIdleConns).
 		Msg("connected to PostgreSQL")
 
-	return &Store{db: db}, nil
+	return &Store{db: db, hasTimescaleDB: extExists}, nil
 }
 
 // Close closes the database connection.
@@ -166,6 +168,13 @@ func (s *Store) Migrate(models ...interface{}) error {
 // Returns:
 //   - error: nil on success, hypertable creation error on failure
 func (s *Store) CreateHypertable(tableName, timeColumn, chunkInterval string) error {
+	if !s.hasTimescaleDB {
+		log.Debug().
+			Str("table", tableName).
+			Msg("skipping hypertable creation (TimescaleDB not available)")
+		return nil
+	}
+
 	sql := fmt.Sprintf(
 		"SELECT create_hypertable('%s', '%s', chunk_time_interval => INTERVAL '%s', if_not_exists => TRUE)",
 		tableName, timeColumn, chunkInterval,

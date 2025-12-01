@@ -107,10 +107,8 @@ func New(cfg *config.Config) (*Engine, error) {
 	}
 	log.Info().Msg("database migrations complete")
 
-	// Create hypertables for time-series optimization (requires TimescaleDB)
-	if err := db.CreateHypertable("transfers", "timestamp", "1 day"); err != nil {
-		log.Warn().Err(err).Msg("failed to create hypertable (TimescaleDB may not be installed)")
-	}
+	// Create hypertables for time-series optimization (if TimescaleDB available)
+	db.CreateHypertable("transfers", "timestamp", "1 day")
 
 	// Initialize decoder
 	dec := decoder.New()

@@ -7,9 +7,9 @@
 💨 **Rafale** — Lightweight Event Indexer for Linea zkEVM
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![Linea](https://img.shields.io/badge/Linea-zkEVM-000000?style=flat&logo=ethereum)](https://linea.build/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18+-336791?style=flat&logo=postgresql)](https://postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791?style=flat&logo=postgresql)](https://postgresql.org/)
 
 *A burst of blockchain events — Go-native indexer exploiting Linea's ZK finality & EIP-4844 blobs.*
 *Single binary, PostgreSQL + TimescaleDB + GraphQL API. Complements Lion for full-stack Linea development.*
@@ -96,17 +96,33 @@ go build -o rafale ./cmd/rafale
 
 ### Database Setup
 
+#### macOS (Homebrew)
+
 ```bash
-# Install TimescaleDB extension
-sudo apt install postgresql-18 timescaledb-2-postgresql-18
+# Add TimescaleDB tap and install
+brew tap timescale/tap
+brew install timescaledb libpq
 
-# Enable in postgresql.conf
-# shared_preload_libraries = 'timescaledb'
+# Link psql to PATH
+brew link --force libpq
 
-# Create database
+# Run TimescaleDB tuner (configures postgresql.conf automatically)
+timescaledb-tune --quiet --yes
+
+# Start PostgreSQL (version 17 minimum)
+brew services start postgresql@<version>
+
+# Create database and enable TimescaleDB
 createdb rafale
 psql -d rafale -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+
+# Verify installation
+psql -d rafale -c "\dx"
 ```
+
+#### Linux
+
+> 🚧 **Work in Progress** — Linux installation guide coming soon.
 
 ### Configuration
 
