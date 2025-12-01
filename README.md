@@ -89,7 +89,7 @@ For sub-second trading data, query the sequencer directly. For everything else, 
 ### Installation
 
 ```bash
-git clone https://github.com/yone-coder/rafale.git
+git clone https://github.com/0xredeth/rafale.git
 cd rafale
 go build -o rafale ./cmd/rafale
 ```
