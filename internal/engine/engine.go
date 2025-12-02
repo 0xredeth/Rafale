@@ -3,9 +3,11 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -13,13 +15,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"github.com/0xredeth/Rafale/internal/api/graphql/model"
+	"github.com/0xredeth/Rafale/internal/pubsub"
+	"github.com/0xredeth/Rafale/internal/rpc"
+	"github.com/0xredeth/Rafale/internal/store"
 	"github.com/0xredeth/Rafale/pkg/config"
 	"github.com/0xredeth/Rafale/pkg/decoder"
 	"github.com/0xredeth/Rafale/pkg/handler"
-	"github.com/0xredeth/Rafale/pkg/rpc"
-	"github.com/0xredeth/Rafale/pkg/store"
 )
 
 // Metrics for engine monitoring.
@@ -48,11 +53,12 @@ var (
 
 // Engine orchestrates the sync loop.
 type Engine struct {
-	cfg      *config.Config
-	rpc      *rpc.Client
-	store    *store.Store
-	decoder  *decoder.Decoder
-	handlers *handler.Registry
+	cfg         *config.Config
+	rpc         *rpc.Client
+	store       *store.Store
+	decoder     *decoder.Decoder
+	handlers    *handler.Registry
+	broadcaster *pubsub.Broadcaster
 
 	// State
 	lastBlock uint64
@@ -62,11 +68,12 @@ type Engine struct {
 //
 // Parameters:
 //   - cfg (*config.Config): configuration
+//   - broadcaster (*pubsub.Broadcaster): pub/sub broadcaster for real-time subscriptions
 //
 // Returns:
 //   - *Engine: initialized engine
 //   - error: nil on success, initialization error on failure
-func New(cfg *config.Config) (*Engine, error) {
+func New(cfg *config.Config, broadcaster *pubsub.Broadcaster) (*Engine, error) {
 	// Initialize RPC client
 	rpcCfg := rpc.DefaultConfig()
 	rpcCfg.URL = cfg.RPCURL
@@ -97,11 +104,10 @@ func New(cfg *config.Config) (*Engine, error) {
 
 	// Auto-migrate event tables
 	if err := db.Migrate(
-		&store.SyncStatus{},
-		&store.IndexerMeta{},
+		&store.Event{},
 		&store.Transfer{},
 	); err != nil {
-		db.Close()
+		_ = db.Close()
 		rpcClient.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
@@ -109,8 +115,15 @@ func New(cfg *config.Config) (*Engine, error) {
 
 	// Setup TimescaleDB optimizations (hypertable + compression + retention)
 	tsCfg := store.DefaultTimescaleConfig()
+
+	// Setup hypertable for generic events table
+	if err := db.SetupTimescaleDB(context.Background(), "events", "timestamp", tsCfg); err != nil {
+		log.Warn().Err(err).Msg("TimescaleDB setup for events table warning (non-fatal)")
+	}
+
+	// Setup hypertable for typed transfers table
 	if err := db.SetupTimescaleDB(context.Background(), "transfers", "timestamp", tsCfg); err != nil {
-		log.Warn().Err(err).Msg("TimescaleDB setup warning (non-fatal)")
+		log.Warn().Err(err).Msg("TimescaleDB setup for transfers table warning (non-fatal)")
 	}
 
 	// Initialize decoder
@@ -120,14 +133,14 @@ func New(cfg *config.Config) (*Engine, error) {
 	for name, contract := range cfg.Contracts {
 		abiJSON, err := os.ReadFile(contract.ABI)
 		if err != nil {
-			db.Close()
+			_ = db.Close()
 			rpcClient.Close()
 			return nil, fmt.Errorf("reading ABI for %s: %w", name, err)
 		}
 
 		addr := common.HexToAddress(contract.Address)
 		if err := dec.RegisterContract(name, addr, string(abiJSON), contract.Events); err != nil {
-			db.Close()
+			_ = db.Close()
 			rpcClient.Close()
 			return nil, fmt.Errorf("registering contract %s: %w", name, err)
 		}
@@ -140,11 +153,12 @@ func New(cfg *config.Config) (*Engine, error) {
 	}
 
 	return &Engine{
-		cfg:      cfg,
-		rpc:      rpcClient,
-		store:    db,
-		decoder:  dec,
-		handlers: handler.Global(),
+		cfg:         cfg,
+		rpc:         rpcClient,
+		store:       db,
+		decoder:     dec,
+		handlers:    handler.Global(),
+		broadcaster: broadcaster,
 	}, nil
 }
 
@@ -198,7 +212,7 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	}
 
 	// Update sync lag metric
-	lag := int64(headBlock) - int64(e.lastBlock)
+	lag := int64(headBlock) - int64(e.lastBlock) //nolint:gosec // G115: Block numbers won't overflow int64
 	if lag < 0 {
 		lag = 0
 	}
@@ -227,10 +241,41 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 		return fmt.Errorf("processing blocks %d-%d: %w", fromBlock, toBlock, err)
 	}
 
+	// Broadcast blocks to subscribers (if broadcaster is configured)
+	if e.broadcaster != nil {
+		// Broadcast the latest processed block
+		header, err := e.rpc.HeaderByNumber(ctx, new(big.Int).SetUint64(toBlock))
+		if err == nil && header != nil {
+			e.broadcaster.BroadcastBlock(&model.Block{
+				Number:     strconv.FormatUint(header.Number.Uint64(), 10),
+				Hash:       header.Hash().Hex(),
+				Timestamp:  time.Unix(int64(header.Time), 0), //nolint:gosec // G115: Timestamp won't overflow
+				ParentHash: header.ParentHash.Hex(),
+			})
+		}
+	}
+
 	// Update state
 	e.lastBlock = toBlock
 	currentBlock.Set(float64(toBlock))
 	blocksIndexed.Add(float64(toBlock - fromBlock + 1))
+
+	// Broadcast sync status to subscribers (if broadcaster is configured)
+	if e.broadcaster != nil {
+		newLag := int64(headBlock) - int64(toBlock) //nolint:gosec // G115: Block numbers won't overflow int64
+		if newLag < 0 {
+			newLag = 0
+		}
+		e.broadcaster.BroadcastSyncStatus(&model.SyncStatus{
+			Network:      e.cfg.Network,
+			ChainID:      strconv.FormatUint(e.cfg.ChainID, 10),
+			CurrentBlock: strconv.FormatUint(toBlock, 10),
+			HeadBlock:    strconv.FormatUint(headBlock, 10),
+			Lag:          strconv.FormatInt(newLag, 10),
+			IsSynced:     newLag == 0,
+			LastSyncTime: func() *time.Time { t := time.Now(); return &t }(),
+		})
+	}
 
 	return nil
 }
@@ -269,6 +314,8 @@ func (e *Engine) processBlockRange(ctx context.Context, fromBlock, toBlock uint6
 }
 
 // processLog decodes and handles a single log entry.
+// All decoded events are auto-stored in the generic events table.
+// Typed handlers are optional and run only if registered.
 func (e *Engine) processLog(ctx context.Context, tx *gorm.DB, logEntry types.Log) error {
 	// Decode the event
 	event, err := e.decoder.Decode(logEntry)
@@ -287,32 +334,95 @@ func (e *Engine) processLog(ctx context.Context, tx *gorm.DB, logEntry types.Log
 		return fmt.Errorf("getting block header: %w", err)
 	}
 
-	// Build handler context
+	blockTime := time.Unix(int64(header.Time), 0) //nolint:gosec // G115: Timestamp won't overflow
+
+	// Auto-store event in generic events table (always)
+	if err := e.storeGenericEvent(tx, logEntry, event, blockTime); err != nil {
+		return fmt.Errorf("storing generic event: %w", err)
+	}
+
+	// Broadcast event to subscribers (if broadcaster is configured)
+	if e.broadcaster != nil {
+		e.broadcaster.BroadcastEvent(&model.GenericEvent{
+			ID:          "0", // ID not available until tx commits
+			BlockNumber: strconv.FormatUint(logEntry.BlockNumber, 10),
+			TxHash:      logEntry.TxHash.Hex(),
+			TxIndex:     int(logEntry.TxIndex), //nolint:gosec // G115: TxIndex is small
+			LogIndex:    int(logEntry.Index),   //nolint:gosec // G115: LogIndex is small
+			Timestamp:   blockTime,
+			Contract:    event.ContractName,
+			EventName:   event.EventName,
+			Data:        convertEventData(event.Data),
+		})
+	}
+
+	// Build handler context for optional typed handlers
 	handlerCtx := &handler.Context{
 		DB: tx,
 		Block: handler.BlockInfo{
 			Number:     logEntry.BlockNumber,
 			Hash:       header.Hash().Hex(),
-			Time:       time.Unix(int64(header.Time), 0),
+			Time:       blockTime,
 			ParentHash: header.ParentHash.Hex(),
 		},
 		Log:   logEntry,
 		Event: event,
 	}
 
-	// Execute handler
-	if err := e.handlers.Handle(handlerCtx); err != nil {
-		return fmt.Errorf("handling event %s: %w", event.EventID, err)
+	// Execute typed handler if registered (optional - for performance optimization)
+	if e.handlers.HasHandler(event.EventID) {
+		if err := e.handlers.Handle(handlerCtx); err != nil {
+			return fmt.Errorf("handling event %s: %w", event.EventID, err)
+		}
+	}
+
+	return nil
+}
+
+// storeGenericEvent saves a decoded event to the generic events table.
+//
+// Parameters:
+//   - tx (*gorm.DB): database transaction
+//   - logEntry (types.Log): raw Ethereum log
+//   - event (*decoder.DecodedEvent): decoded event data
+//   - blockTime (time.Time): block timestamp
+//
+// Returns:
+//   - error: nil on success, error on failure
+func (e *Engine) storeGenericEvent(tx *gorm.DB, logEntry types.Log, event *decoder.DecodedEvent, blockTime time.Time) error {
+	// Serialize event data to JSON
+	dataJSON, err := json.Marshal(event.Data)
+	if err != nil {
+		return fmt.Errorf("marshaling event data: %w", err)
+	}
+
+	genericEvent := &store.Event{
+		BaseEvent: store.BaseEvent{
+			BlockNumber: logEntry.BlockNumber,
+			TxHash:      logEntry.TxHash.Hex(),
+			TxIndex:     logEntry.TxIndex,
+			LogIndex:    logEntry.Index,
+			Timestamp:   blockTime,
+		},
+		ContractName: event.ContractName,
+		ContractAddr: logEntry.Address.Hex(),
+		EventName:    event.EventName,
+		EventSig:     logEntry.Topics[0].Hex(),
+		Data:         datatypes.JSON(dataJSON),
+	}
+
+	if err := tx.Create(genericEvent).Error; err != nil {
+		return fmt.Errorf("inserting generic event: %w", err)
 	}
 
 	return nil
 }
 
 // determineStartBlock finds the starting block for sync.
-// Uses MAX(block_number) from event tables per Rafale design.
+// Uses MAX(block_number) from generic events table per Rafale design.
 func (e *Engine) determineStartBlock(ctx context.Context) (uint64, error) {
-	// Query MAX(block_number) from transfers table
-	maxBlock, err := e.store.GetMaxBlockNumber(ctx, "transfers")
+	// Query MAX(block_number) from generic events table (source of truth)
+	maxBlock, err := e.store.GetMaxBlockNumber(ctx, "events")
 	if err != nil {
 		return 0, fmt.Errorf("getting max block: %w", err)
 	}
@@ -321,12 +431,12 @@ func (e *Engine) determineStartBlock(ctx context.Context) (uint64, error) {
 	if maxBlock > 0 {
 		log.Info().
 			Uint64("maxIndexedBlock", maxBlock).
-			Msg("found existing indexed data, resuming")
+			Msg("found existing indexed data in events table, resuming")
 		return maxBlock, nil // Start from last indexed block (syncOnce will add 1)
 	}
 
 	// Otherwise use minimum configured start_block
-	var minConfiguredStart uint64 = ^uint64(0)
+	minConfiguredStart := ^uint64(0)
 	for _, contract := range e.cfg.Contracts {
 		if contract.StartBlock < minConfiguredStart {
 			minConfiguredStart = contract.StartBlock
@@ -340,6 +450,49 @@ func (e *Engine) determineStartBlock(ctx context.Context) (uint64, error) {
 	return minConfiguredStart, nil
 }
 
+// Reload reloads the engine configuration and re-registers contracts.
+// Used for hot-reload during development.
+//
+// Parameters:
+//   - newCfg (*config.Config): new configuration to apply
+//
+// Returns:
+//   - error: nil on success, reload error on failure
+func (e *Engine) Reload(newCfg *config.Config) error {
+	log.Info().Msg("reloading engine configuration")
+
+	// Clear existing decoder state
+	e.decoder.Clear()
+
+	// Re-register contracts from new config
+	for name, contract := range newCfg.Contracts {
+		abiJSON, err := os.ReadFile(contract.ABI)
+		if err != nil {
+			return fmt.Errorf("reading ABI for %s: %w", name, err)
+		}
+
+		addr := common.HexToAddress(contract.Address)
+		if err := e.decoder.RegisterContract(name, addr, string(abiJSON), contract.Events); err != nil {
+			return fmt.Errorf("registering contract %s: %w", name, err)
+		}
+
+		log.Info().
+			Str("contract", name).
+			Str("address", contract.Address).
+			Int("events", len(contract.Events)).
+			Msg("re-registered contract")
+	}
+
+	// Update config reference
+	e.cfg = newCfg
+
+	log.Info().
+		Int("contracts", len(newCfg.Contracts)).
+		Msg("configuration reloaded successfully")
+
+	return nil
+}
+
 // Close shuts down the engine.
 //
 // Returns:
@@ -347,4 +500,27 @@ func (e *Engine) determineStartBlock(ctx context.Context) (uint64, error) {
 func (e *Engine) Close() error {
 	e.rpc.Close()
 	return e.store.Close()
+}
+
+// convertEventData converts decoded event data to map[string]any for GraphQL.
+// Handles common Ethereum types like common.Address and *big.Int.
+func convertEventData(data map[string]interface{}) map[string]any {
+	result := make(map[string]any, len(data))
+	for k, v := range data {
+		switch val := v.(type) {
+		case common.Address:
+			result[k] = val.Hex()
+		case *big.Int:
+			if val != nil {
+				result[k] = val.String()
+			} else {
+				result[k] = "0"
+			}
+		case []byte:
+			result[k] = common.Bytes2Hex(val)
+		default:
+			result[k] = v
+		}
+	}
+	return result
 }

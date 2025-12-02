@@ -18,11 +18,12 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/vektah/gqlparser/v2/ast"
 
-	"github.com/0xredeth/Rafale/pkg/api/graphql/generated"
-	"github.com/0xredeth/Rafale/pkg/api/graphql/resolver"
+	"github.com/0xredeth/Rafale/internal/api/graphql/generated"
+	"github.com/0xredeth/Rafale/internal/api/graphql/resolver"
+	"github.com/0xredeth/Rafale/internal/pubsub"
+	"github.com/0xredeth/Rafale/internal/rpc"
+	"github.com/0xredeth/Rafale/internal/store"
 	"github.com/0xredeth/Rafale/pkg/config"
-	"github.com/0xredeth/Rafale/pkg/rpc"
-	"github.com/0xredeth/Rafale/pkg/store"
 )
 
 // Server is the GraphQL API server.
@@ -38,13 +39,14 @@ type Server struct {
 //   - cfg (*config.Config): application configuration
 //   - store (*store.Store): database store
 //   - rpc (*rpc.Client): RPC client
+//   - broadcaster (*pubsub.Broadcaster): pub/sub broadcaster for subscriptions
 //
 // Returns:
 //   - *Server: initialized server
-func NewServer(cfg *config.Config, store *store.Store, rpc *rpc.Client) *Server {
+func NewServer(cfg *config.Config, store *store.Store, rpc *rpc.Client, broadcaster *pubsub.Broadcaster) *Server {
 	return &Server{
 		cfg:      cfg,
-		resolver: resolver.NewResolver(cfg, store, rpc),
+		resolver: resolver.NewResolver(cfg, store, rpc, broadcaster),
 	}
 }
 
@@ -107,9 +109,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/", playground.Handler("Rafale GraphQL", "/graphql"))
 
 	// Health check
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Debug().Err(err).Msg("health check write failed")
+		}
 	})
 
 	addr := fmt.Sprintf(":%d", s.cfg.Server.GraphQLPort)

@@ -6,7 +6,7 @@
 
 💨 **Rafale** — Lightweight Event Indexer for Linea zkEVM
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![Linea](https://img.shields.io/badge/Linea-zkEVM-000000?style=flat&logo=ethereum)](https://linea.build/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791?style=flat&logo=postgresql)](https://postgresql.org/)
@@ -15,10 +15,6 @@
 *Single binary, PostgreSQL + TimescaleDB + GraphQL API. Complements Lion for full-stack Linea development.*
 
 </div>
-
----
-
-> ⚠️ **Work in Progress** — This project is under active development. Features, APIs, and performance numbers are estimates and subject to change. Not production-ready yet.
 
 ---
 
@@ -59,22 +55,24 @@ For sub-second trading data, query the sequencer directly. For everything else, 
 
 ## Features
 
-### v1.0 (Current Target)
+### v1.0 ✅ Complete
 
+- ✅ **Hybrid Auto-Handler System** — zero-config event indexing with optional typed handlers
+- ✅ **Any Contract, Any Event** — works with DEX, NFT, lending, governance - not just ERC20
 - ✅ **No checkpoint table** — uses `MAX(block_number)` from event tables
 - ✅ **Unified sync loop** — no historical vs live distinction
 - ✅ **Minimal config** — network presets deduce most values
 - ✅ **Single binary** — `--watch` flag for dev mode
-- ✅ **GraphQL only** — no gRPC complexity
+- ✅ **GraphQL API** — queries + real-time subscriptions via WebSocket
 - ✅ **TimescaleDB** — hypertables for time-series event data
 - ✅ **Circuit breaker** — RPC resilience with exponential backoff
+- ✅ **Prometheus metrics** — full observability out of the box
 
 ### v2.0 (Roadmap)
 
 - 🔄 Blob-based indexing via EIP-4844
 - 🔄 Conflation-aware syncing
 - 🔄 Shnarf-based caching
-- 🔄 WebSocket streaming
 
 ---
 
@@ -139,13 +137,25 @@ network: linea-mainnet
 database: ${DATABASE_URL}
 
 contracts:
-  usdc:  # lowercase name - must match handler registration
+  # ERC20 tokens
+  usdc:
     abi: ./abis/erc20.json
     address: "0x176211869cA2b568f2A7D4EE941E073a821EE1ff"
-    start_block: 1000000
+    start_block: 14000000
     events:
-      - Transfer   # Must match ABI event name exactly (case-sensitive)
-      - Approval
+      - Transfer
+
+  # DEX pools (SyncSwap, etc.)
+  syncswap_pool:
+    abi: ./abis/syncswap_pool.json
+    address: "0x..."
+    start_block: 14000000
+    events:
+      - Swap
+      - Mint
+      - Burn
+
+  # Any contract, any event - no handler code required!
 ```
 
 See [rafale.example.yaml](rafale.example.yaml) for a complete configuration reference.
@@ -169,20 +179,49 @@ export LINEA_RPC_URL="https://linea-mainnet.infura.io/v3/YOUR_KEY"
 ## Architecture
 
 ```
-Linea RPC → Engine → Decoder → Handlers → PostgreSQL/TimescaleDB → GraphQL API
+Linea RPC → Engine → Decoder → [Auto-Store + Handlers] → PostgreSQL/TimescaleDB → GraphQL API
 ```
+
+### Hybrid Auto-Handler System
+
+Rafale uses a **zero-config event indexing** approach:
+
+```
+Decoded Event
+     │
+     ├──► Generic Events Table (always stored, JSONB data)
+     │         └─► GraphQL: events(filter: { contract, event })
+     │
+     └──► Typed Handler (if registered)
+               └─► Typed Table (indexed columns)
+```
+
+| Mode | Use Case | Setup Required |
+|------|----------|----------------|
+| **Generic Only** | Exploration, prototyping | Just add contract to YAML |
+| **Hybrid** | Production with typed queries | Add handler for specific events |
+
+**Benefits:**
+- Start indexing immediately - no handler code required
+- Events queryable via GraphQL out of the box
+- Add typed handlers later for performance-critical queries
+- Works with ANY Ethereum event (DEX Swap, NFT Transfer, Lending Borrow, etc.)
 
 ```
 rafale/
-├── cmd/rafale/main.go       # CLI entry point
+├── cmd/rafale/              # CLI entry point + commands
 ├── pkg/
 │   ├── config/              # Viper config + network presets
-│   ├── engine/              # Unified sync loop
-│   ├── handler/             # Handler registry + context
-│   ├── rpc/                 # Linea RPC client + circuit breaker
+│   ├── decoder/             # ABI event decoding
+│   └── handler/             # Handler registry + context
+├── internal/
+│   ├── api/                 # GraphQL server + resolvers
+│   ├── codegen/             # Code generation templates
+│   ├── engine/              # Unified sync loop + metrics
+│   ├── pubsub/              # Real-time event broadcasting
+│   ├── rpc/                 # Linea RPC client
 │   ├── store/               # GORM + PostgreSQL + TimescaleDB
-│   └── api/graphql/         # gqlgen server
-├── generated/               # Code-generated bindings
+│   └── watcher/             # Hot-reload file watcher
 ├── abis/                    # Contract ABIs
 └── rafale.yaml              # Config file
 ```
@@ -190,6 +229,8 @@ rafale/
 ---
 
 ## Usage
+
+> 📖 For detailed usage instructions, see [use.md](use.md)
 
 ### Define Schema
 
@@ -332,12 +373,13 @@ Measured on local development machine (Apple Silicon, PostgreSQL local):
 
 | Metric | Rafale | Notes |
 |--------|--------|-------|
-| Memory | ~30 MB | Idle indexer with handlers loaded |
-| Startup | <1s | Cold start to first block fetch |
-| GraphQL | ~6 req/s | Simple queries via curl |
-| Events/block | 40+ | Varies by contract activity |
+| Binary | **~33 MB** | Single Go binary, no dependencies |
+| Memory | **~30 MB** | Idle indexer with handlers loaded |
+| Startup | **<1s** | Cold start to first block fetch |
+| Codebase | **~14K LOC** | 39 Go source files |
+| Events/block | **40+** | Varies by contract activity |
 
-> 💡 **Lightweight by design** — Rafale uses minimal memory compared to Node.js-based indexers (typically 200-500MB+).
+> 💡 **Lightweight by design** — Rafale uses minimal memory compared to Node.js-based indexers (typically 200-500MB+). The single 33MB binary includes everything needed to run.
 
 ---
 
@@ -374,7 +416,7 @@ Measured on local development machine (Apple Silicon, PostgreSQL local):
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE)
+AGPL-3.0 — see [LICENSE](LICENSE)
 
 ---
 

@@ -132,10 +132,12 @@ func (s *Store) AddCompressionPolicy(ctx context.Context, tableName, compressAft
 	}
 
 	// Remove existing policy if any (idempotent)
-	s.db.WithContext(ctx).Exec(
+	if err := s.db.WithContext(ctx).Exec(
 		"SELECT remove_compression_policy($1, if_exists => true)",
 		tableName,
-	)
+	).Error; err != nil {
+		log.Warn().Err(err).Str("table", tableName).Msg("failed to remove existing compression policy")
+	}
 
 	sql := fmt.Sprintf(
 		"SELECT add_compression_policy('%s', INTERVAL '%s', if_not_exists => true)",
@@ -169,10 +171,12 @@ func (s *Store) AddRetentionPolicy(ctx context.Context, tableName, retainFor str
 	}
 
 	// Remove existing policy if any (idempotent)
-	s.db.WithContext(ctx).Exec(
+	if err := s.db.WithContext(ctx).Exec(
 		"SELECT remove_retention_policy($1, if_exists => true)",
 		tableName,
-	)
+	).Error; err != nil {
+		log.Warn().Err(err).Str("table", tableName).Msg("failed to remove existing retention policy")
+	}
 
 	sql := fmt.Sprintf(
 		"SELECT add_retention_policy('%s', INTERVAL '%s', if_not_exists => true)",

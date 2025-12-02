@@ -7,14 +7,15 @@ package resolver
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strconv"
 	"time"
 
-	"github.com/0xredeth/Rafale/pkg/api/graphql/generated"
-	"github.com/0xredeth/Rafale/pkg/api/graphql/model"
-	"github.com/0xredeth/Rafale/pkg/store"
+	"github.com/0xredeth/Rafale/internal/api/graphql/generated"
+	"github.com/0xredeth/Rafale/internal/api/graphql/model"
+	"github.com/0xredeth/Rafale/internal/store"
 )
 
 // SyncStatus is the resolver for the syncStatus field.
@@ -59,7 +60,7 @@ func (r *queryResolver) Block(ctx context.Context, number string) (*model.Block,
 	return &model.Block{
 		Number:     strconv.FormatUint(header.Number.Uint64(), 10),
 		Hash:       header.Hash().Hex(),
-		Timestamp:  time.Unix(int64(header.Time), 0),
+		Timestamp:  time.Unix(int64(header.Time), 0), //nolint:gosec // G115: Timestamp won't overflow
 		ParentHash: header.ParentHash.Hex(),
 	}, nil
 }
@@ -76,11 +77,17 @@ func (r *queryResolver) LatestBlock(ctx context.Context) (*model.Block, error) {
 
 // Events is the resolver for the events field.
 func (r *queryResolver) Events(ctx context.Context, filter *model.EventFilter, orderBy *model.EventOrder, first *int, after *string, last *int, before *string) (*model.EventConnection, error) {
-	// Build query parameters
-	q := store.TransferQuery{}
+	// Build query parameters for generic events table
+	q := store.EventQuery{}
 
 	// Apply filters
 	if filter != nil {
+		if filter.Contract != nil {
+			q.ContractName = filter.Contract
+		}
+		if filter.EventName != nil {
+			q.EventName = filter.EventName
+		}
 		if filter.FromBlock != nil {
 			block, err := strconv.ParseUint(*filter.FromBlock, 10, 64)
 			if err != nil {
@@ -147,25 +154,25 @@ func (r *queryResolver) Events(ctx context.Context, filter *model.EventFilter, o
 		q.BeforeID = &id
 	}
 
-	// Execute query
-	transfers, totalCount, err := r.Store.QueryTransfers(ctx, q)
+	// Execute query against generic events table
+	events, totalCount, err := r.Store.QueryEvents(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("querying transfers: %w", err)
+		return nil, fmt.Errorf("querying events: %w", err)
 	}
 
 	// Determine pagination info
-	hasNextPage := len(transfers) > limit
+	hasNextPage := len(events) > limit
 	if hasNextPage {
-		transfers = transfers[:limit] // trim extra
+		events = events[:limit] // trim extra
 	}
 	hasPreviousPage := after != nil
 
 	// Build edges
-	edges := make([]*model.EventEdge, len(transfers))
-	for i, t := range transfers {
-		event := transferToGenericEvent(&t)
+	edges := make([]*model.EventEdge, len(events))
+	for i, e := range events {
+		event := eventToGenericEvent(&e)
 		edges[i] = &model.EventEdge{
-			Cursor: encodeCursor(t.ID),
+			Cursor: encodeCursor(e.ID),
 			Node:   event,
 		}
 	}
@@ -192,66 +199,77 @@ func (r *queryResolver) Events(ctx context.Context, filter *model.EventFilter, o
 // Event is the resolver for the event field.
 func (r *queryResolver) Event(ctx context.Context, id string) (*model.GenericEvent, error) {
 	// Parse ID
-	transferID, err := strconv.ParseUint(id, 10, 64)
+	eventID, err := strconv.ParseUint(id, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid event id: %w", err)
 	}
 
-	transfer, err := r.Store.GetTransferByID(ctx, transferID)
+	event, err := r.Store.GetEventByID(ctx, eventID)
 	if err != nil {
 		return nil, fmt.Errorf("getting event: %w", err)
 	}
-	if transfer == nil {
+	if event == nil {
 		return nil, nil
 	}
 
-	return transferToGenericEvent(transfer), nil
+	return eventToGenericEvent(event), nil
 }
 
 // EventsByTx is the resolver for the eventsByTx field.
 func (r *queryResolver) EventsByTx(ctx context.Context, txHash string) ([]*model.GenericEvent, error) {
-	transfers, err := r.Store.GetTransfersByTxHash(ctx, txHash)
+	events, err := r.Store.GetEventsByTxHash(ctx, txHash)
 	if err != nil {
 		return nil, fmt.Errorf("getting events by tx: %w", err)
 	}
 
-	events := make([]*model.GenericEvent, len(transfers))
-	for i, t := range transfers {
-		events[i] = transferToGenericEvent(&t)
+	result := make([]*model.GenericEvent, len(events))
+	for i, e := range events {
+		result[i] = eventToGenericEvent(&e)
 	}
-	return events, nil
+	return result, nil
 }
 
 // NewEvent is the resolver for the newEvent field.
+// Subscribers receive real-time events matching optional contract and event name filters.
+//
+// Parameters:
+//   - ctx (context.Context): context for subscription lifecycle
+//   - contract (*string): optional contract name filter
+//   - eventName (*string): optional event name filter
+//
+// Returns:
+//   - <-chan *model.GenericEvent: channel streaming matching events
+//   - error: nil on success
 func (r *subscriptionResolver) NewEvent(ctx context.Context, contract *string, eventName *string) (<-chan *model.GenericEvent, error) {
-	// TODO: Implement event subscription with pubsub
-	ch := make(chan *model.GenericEvent)
-	go func() {
-		<-ctx.Done()
-		close(ch)
-	}()
+	ch, _ := r.Broadcaster.SubscribeEvents(ctx, contract, eventName)
 	return ch, nil
 }
 
 // NewBlock is the resolver for the newBlock field.
+// Subscribers receive real-time block notifications as they are indexed.
+//
+// Parameters:
+//   - ctx (context.Context): context for subscription lifecycle
+//
+// Returns:
+//   - <-chan *model.Block: channel streaming new blocks
+//   - error: nil on success
 func (r *subscriptionResolver) NewBlock(ctx context.Context) (<-chan *model.Block, error) {
-	// TODO: Implement block subscription
-	ch := make(chan *model.Block)
-	go func() {
-		<-ctx.Done()
-		close(ch)
-	}()
+	ch, _ := r.Broadcaster.SubscribeBlocks(ctx)
 	return ch, nil
 }
 
 // SyncStatusUpdated is the resolver for the syncStatusUpdated field.
+// Subscribers receive real-time sync status updates as indexing progresses.
+//
+// Parameters:
+//   - ctx (context.Context): context for subscription lifecycle
+//
+// Returns:
+//   - <-chan *model.SyncStatus: channel streaming status updates
+//   - error: nil on success
 func (r *subscriptionResolver) SyncStatusUpdated(ctx context.Context) (<-chan *model.SyncStatus, error) {
-	// TODO: Implement sync status subscription
-	ch := make(chan *model.SyncStatus)
-	go func() {
-		<-ctx.Done()
-		close(ch)
-	}()
+	ch, _ := r.Broadcaster.SubscribeSyncStatus(ctx)
 	return ch, nil
 }
 
@@ -284,21 +302,23 @@ func decodeCursor(cursor string) (uint64, error) {
 	return id, nil
 }
 
-// transferToGenericEvent converts a store.Transfer to a model.GenericEvent.
-func transferToGenericEvent(t *store.Transfer) *model.GenericEvent {
+// eventToGenericEvent converts a store.Event to a model.GenericEvent.
+func eventToGenericEvent(e *store.Event) *model.GenericEvent {
+	// Parse JSONB data into map
+	var data map[string]any
+	if err := json.Unmarshal(e.Data, &data); err != nil {
+		data = map[string]any{"raw": string(e.Data)}
+	}
+
 	return &model.GenericEvent{
-		ID:          strconv.FormatUint(t.ID, 10),
-		BlockNumber: strconv.FormatUint(t.BlockNumber, 10),
-		TxHash:      t.TxHash,
-		TxIndex:     int(t.TxIndex),
-		LogIndex:    int(t.LogIndex),
-		Timestamp:   t.Timestamp,
-		Contract:    "USDC", // Hardcoded for now, single contract
-		EventName:   "Transfer",
-		Data: map[string]any{
-			"from":  t.From,
-			"to":    t.To,
-			"value": t.Value,
-		},
+		ID:          strconv.FormatUint(e.ID, 10),
+		BlockNumber: strconv.FormatUint(e.BlockNumber, 10),
+		TxHash:      e.TxHash,
+		TxIndex:     int(e.TxIndex),  //nolint:gosec // G115: TxIndex is small
+		LogIndex:    int(e.LogIndex), //nolint:gosec // G115: LogIndex is small
+		Timestamp:   e.Timestamp,
+		Contract:    e.ContractName,
+		EventName:   e.EventName,
+		Data:        data,
 	}
 }
