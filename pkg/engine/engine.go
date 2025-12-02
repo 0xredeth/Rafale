@@ -3,6 +3,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"github.com/0xredeth/Rafale/pkg/config"
@@ -99,6 +101,7 @@ func New(cfg *config.Config) (*Engine, error) {
 	if err := db.Migrate(
 		&store.SyncStatus{},
 		&store.IndexerMeta{},
+		&store.Event{},
 		&store.Transfer{},
 	); err != nil {
 		db.Close()
@@ -109,8 +112,15 @@ func New(cfg *config.Config) (*Engine, error) {
 
 	// Setup TimescaleDB optimizations (hypertable + compression + retention)
 	tsCfg := store.DefaultTimescaleConfig()
+
+	// Setup hypertable for generic events table
+	if err := db.SetupTimescaleDB(context.Background(), "events", "timestamp", tsCfg); err != nil {
+		log.Warn().Err(err).Msg("TimescaleDB setup for events table warning (non-fatal)")
+	}
+
+	// Setup hypertable for typed transfers table
 	if err := db.SetupTimescaleDB(context.Background(), "transfers", "timestamp", tsCfg); err != nil {
-		log.Warn().Err(err).Msg("TimescaleDB setup warning (non-fatal)")
+		log.Warn().Err(err).Msg("TimescaleDB setup for transfers table warning (non-fatal)")
 	}
 
 	// Initialize decoder
@@ -269,6 +279,8 @@ func (e *Engine) processBlockRange(ctx context.Context, fromBlock, toBlock uint6
 }
 
 // processLog decodes and handles a single log entry.
+// All decoded events are auto-stored in the generic events table.
+// Typed handlers are optional and run only if registered.
 func (e *Engine) processLog(ctx context.Context, tx *gorm.DB, logEntry types.Log) error {
 	// Decode the event
 	event, err := e.decoder.Decode(logEntry)
@@ -287,32 +299,80 @@ func (e *Engine) processLog(ctx context.Context, tx *gorm.DB, logEntry types.Log
 		return fmt.Errorf("getting block header: %w", err)
 	}
 
-	// Build handler context
+	blockTime := time.Unix(int64(header.Time), 0)
+
+	// Auto-store event in generic events table (always)
+	if err := e.storeGenericEvent(tx, logEntry, event, blockTime); err != nil {
+		return fmt.Errorf("storing generic event: %w", err)
+	}
+
+	// Build handler context for optional typed handlers
 	handlerCtx := &handler.Context{
 		DB: tx,
 		Block: handler.BlockInfo{
 			Number:     logEntry.BlockNumber,
 			Hash:       header.Hash().Hex(),
-			Time:       time.Unix(int64(header.Time), 0),
+			Time:       blockTime,
 			ParentHash: header.ParentHash.Hex(),
 		},
 		Log:   logEntry,
 		Event: event,
 	}
 
-	// Execute handler
-	if err := e.handlers.Handle(handlerCtx); err != nil {
-		return fmt.Errorf("handling event %s: %w", event.EventID, err)
+	// Execute typed handler if registered (optional - for performance optimization)
+	if e.handlers.HasHandler(event.EventID) {
+		if err := e.handlers.Handle(handlerCtx); err != nil {
+			return fmt.Errorf("handling event %s: %w", event.EventID, err)
+		}
+	}
+
+	return nil
+}
+
+// storeGenericEvent saves a decoded event to the generic events table.
+//
+// Parameters:
+//   - tx (*gorm.DB): database transaction
+//   - logEntry (types.Log): raw Ethereum log
+//   - event (*decoder.DecodedEvent): decoded event data
+//   - blockTime (time.Time): block timestamp
+//
+// Returns:
+//   - error: nil on success, error on failure
+func (e *Engine) storeGenericEvent(tx *gorm.DB, logEntry types.Log, event *decoder.DecodedEvent, blockTime time.Time) error {
+	// Serialize event data to JSON
+	dataJSON, err := json.Marshal(event.Data)
+	if err != nil {
+		return fmt.Errorf("marshaling event data: %w", err)
+	}
+
+	genericEvent := &store.Event{
+		BaseEvent: store.BaseEvent{
+			BlockNumber: logEntry.BlockNumber,
+			TxHash:      logEntry.TxHash.Hex(),
+			TxIndex:     logEntry.TxIndex,
+			LogIndex:    logEntry.Index,
+			Timestamp:   blockTime,
+		},
+		ContractName: event.ContractName,
+		ContractAddr: logEntry.Address.Hex(),
+		EventName:    event.EventName,
+		EventSig:     logEntry.Topics[0].Hex(),
+		Data:         datatypes.JSON(dataJSON),
+	}
+
+	if err := tx.Create(genericEvent).Error; err != nil {
+		return fmt.Errorf("inserting generic event: %w", err)
 	}
 
 	return nil
 }
 
 // determineStartBlock finds the starting block for sync.
-// Uses MAX(block_number) from event tables per Rafale design.
+// Uses MAX(block_number) from generic events table per Rafale design.
 func (e *Engine) determineStartBlock(ctx context.Context) (uint64, error) {
-	// Query MAX(block_number) from transfers table
-	maxBlock, err := e.store.GetMaxBlockNumber(ctx, "transfers")
+	// Query MAX(block_number) from generic events table (source of truth)
+	maxBlock, err := e.store.GetMaxBlockNumber(ctx, "events")
 	if err != nil {
 		return 0, fmt.Errorf("getting max block: %w", err)
 	}
@@ -321,7 +381,7 @@ func (e *Engine) determineStartBlock(ctx context.Context) (uint64, error) {
 	if maxBlock > 0 {
 		log.Info().
 			Uint64("maxIndexedBlock", maxBlock).
-			Msg("found existing indexed data, resuming")
+			Msg("found existing indexed data in events table, resuming")
 		return maxBlock, nil // Start from last indexed block (syncOnce will add 1)
 	}
 

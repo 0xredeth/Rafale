@@ -61,6 +61,8 @@ For sub-second trading data, query the sequencer directly. For everything else, 
 
 ### v1.0 (Current Target)
 
+- ✅ **Hybrid Auto-Handler System** — zero-config event indexing with optional typed handlers
+- ✅ **Any Contract, Any Event** — works with DEX, NFT, lending, governance - not just ERC20
 - ✅ **No checkpoint table** — uses `MAX(block_number)` from event tables
 - ✅ **Unified sync loop** — no historical vs live distinction
 - ✅ **Minimal config** — network presets deduce most values
@@ -139,13 +141,25 @@ network: linea-mainnet
 database: ${DATABASE_URL}
 
 contracts:
-  usdc:  # lowercase name - must match handler registration
+  # ERC20 tokens
+  usdc:
     abi: ./abis/erc20.json
     address: "0x176211869cA2b568f2A7D4EE941E073a821EE1ff"
-    start_block: 1000000
+    start_block: 14000000
     events:
-      - Transfer   # Must match ABI event name exactly (case-sensitive)
-      - Approval
+      - Transfer
+
+  # DEX pools (SyncSwap, etc.)
+  syncswap_pool:
+    abi: ./abis/syncswap_pool.json
+    address: "0x..."
+    start_block: 14000000
+    events:
+      - Swap
+      - Mint
+      - Burn
+
+  # Any contract, any event - no handler code required!
 ```
 
 See [rafale.example.yaml](rafale.example.yaml) for a complete configuration reference.
@@ -169,8 +183,33 @@ export LINEA_RPC_URL="https://linea-mainnet.infura.io/v3/YOUR_KEY"
 ## Architecture
 
 ```
-Linea RPC → Engine → Decoder → Handlers → PostgreSQL/TimescaleDB → GraphQL API
+Linea RPC → Engine → Decoder → [Auto-Store + Handlers] → PostgreSQL/TimescaleDB → GraphQL API
 ```
+
+### Hybrid Auto-Handler System
+
+Rafale uses a **zero-config event indexing** approach:
+
+```
+Decoded Event
+     │
+     ├──► Generic Events Table (always stored, JSONB data)
+     │         └─► GraphQL: events(filter: { contract, event })
+     │
+     └──► Typed Handler (if registered)
+               └─► Typed Table (indexed columns)
+```
+
+| Mode | Use Case | Setup Required |
+|------|----------|----------------|
+| **Generic Only** | Exploration, prototyping | Just add contract to YAML |
+| **Hybrid** | Production with typed queries | Add handler for specific events |
+
+**Benefits:**
+- Start indexing immediately - no handler code required
+- Events queryable via GraphQL out of the box
+- Add typed handlers later for performance-critical queries
+- Works with ANY Ethereum event (DEX Swap, NFT Transfer, Lending Borrow, etc.)
 
 ```
 rafale/
@@ -332,12 +371,13 @@ Measured on local development machine (Apple Silicon, PostgreSQL local):
 
 | Metric | Rafale | Notes |
 |--------|--------|-------|
-| Memory | ~30 MB | Idle indexer with handlers loaded |
-| Startup | <1s | Cold start to first block fetch |
-| GraphQL | ~6 req/s | Simple queries via curl |
-| Events/block | 40+ | Varies by contract activity |
+| Binary | **33 MB** | Single Go binary, no dependencies |
+| Memory | **~30 MB** | Idle indexer with handlers loaded |
+| Startup | **<1s** | Cold start to first block fetch |
+| Codebase | **~10K LOC** | 29 Go source files |
+| Events/block | **40+** | Varies by contract activity |
 
-> 💡 **Lightweight by design** — Rafale uses minimal memory compared to Node.js-based indexers (typically 200-500MB+).
+> 💡 **Lightweight by design** — Rafale uses minimal memory compared to Node.js-based indexers (typically 200-500MB+). The single 33MB binary includes everything needed to run.
 
 ---
 

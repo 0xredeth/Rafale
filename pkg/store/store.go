@@ -419,3 +419,146 @@ func (s *Store) GetTransfersByTxHash(ctx context.Context, txHash string) ([]Tran
 	}
 	return transfers, nil
 }
+
+// EventQuery holds query parameters for generic events.
+type EventQuery struct {
+	ContractName *string
+	EventName    *string
+	FromBlock    *uint64
+	ToBlock      *uint64
+	FromTime     *time.Time
+	ToTime       *time.Time
+	OrderBy      string // "block_number" or "timestamp"
+	OrderDir     string // "ASC" or "DESC"
+	Limit        int
+	AfterID      *uint64 // cursor-based pagination
+	BeforeID     *uint64
+}
+
+// QueryEvents queries generic events with filtering, ordering, and pagination.
+//
+// Parameters:
+//   - ctx (context.Context): request context
+//   - q (EventQuery): query parameters
+//
+// Returns:
+//   - []Event: matching events
+//   - int64: total count matching filters (before pagination)
+//   - error: nil on success, query error on failure
+func (s *Store) QueryEvents(ctx context.Context, q EventQuery) ([]Event, int64, error) {
+	start := time.Now()
+
+	// Build base query with filters
+	query := s.db.WithContext(ctx).Model(&Event{})
+
+	if q.ContractName != nil {
+		query = query.Where("contract_name = ?", *q.ContractName)
+	}
+	if q.EventName != nil {
+		query = query.Where("event_name = ?", *q.EventName)
+	}
+	if q.FromBlock != nil {
+		query = query.Where("block_number >= ?", *q.FromBlock)
+	}
+	if q.ToBlock != nil {
+		query = query.Where("block_number <= ?", *q.ToBlock)
+	}
+	if q.FromTime != nil {
+		query = query.Where("timestamp >= ?", *q.FromTime)
+	}
+	if q.ToTime != nil {
+		query = query.Where("timestamp <= ?", *q.ToTime)
+	}
+
+	// Get total count
+	var totalCount int64
+	if err := query.Count(&totalCount).Error; err != nil {
+		return nil, 0, fmt.Errorf("counting events: %w", err)
+	}
+
+	// Apply cursor-based pagination
+	if q.AfterID != nil {
+		query = query.Where("id > ?", *q.AfterID)
+	}
+	if q.BeforeID != nil {
+		query = query.Where("id < ?", *q.BeforeID)
+	}
+
+	// Apply ordering
+	orderBy := "block_number"
+	if q.OrderBy == "timestamp" {
+		orderBy = "timestamp"
+	}
+	orderDir := "ASC"
+	if q.OrderDir == "DESC" {
+		orderDir = "DESC"
+	}
+	query = query.Order(fmt.Sprintf("%s %s, id %s", orderBy, orderDir, orderDir))
+
+	// Apply limit
+	if q.Limit > 0 {
+		query = query.Limit(q.Limit)
+	}
+
+	// Execute query
+	var events []Event
+	if err := query.Find(&events).Error; err != nil {
+		return nil, 0, fmt.Errorf("querying events: %w", err)
+	}
+
+	dbQueryDuration.WithLabelValues("query_events").Observe(time.Since(start).Seconds())
+	return events, totalCount, nil
+}
+
+// GetEventByID retrieves a single generic event by ID.
+//
+// Parameters:
+//   - ctx (context.Context): request context
+//   - id (uint64): event ID
+//
+// Returns:
+//   - *Event: the event or nil if not found
+//   - error: nil on success, query error on failure
+func (s *Store) GetEventByID(ctx context.Context, id uint64) (*Event, error) {
+	var event Event
+	if err := s.db.WithContext(ctx).First(&event, id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("getting event %d: %w", id, err)
+	}
+	return &event, nil
+}
+
+// GetEventsByTxHash retrieves generic events by transaction hash.
+//
+// Parameters:
+//   - ctx (context.Context): request context
+//   - txHash (string): transaction hash
+//
+// Returns:
+//   - []Event: matching events
+//   - error: nil on success, query error on failure
+func (s *Store) GetEventsByTxHash(ctx context.Context, txHash string) ([]Event, error) {
+	var events []Event
+	if err := s.db.WithContext(ctx).Where("tx_hash = ?", txHash).Order("log_index ASC").Find(&events).Error; err != nil {
+		return nil, fmt.Errorf("getting events by tx_hash %s: %w", txHash, err)
+	}
+	return events, nil
+}
+
+// GetEventCount returns the total number of generic events indexed.
+//
+// Parameters:
+//   - ctx (context.Context): request context
+//
+// Returns:
+//   - int64: count of events
+//   - error: nil on success, query error on failure
+func (s *Store) GetEventCount(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&Event{}).Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("counting events: %w", err)
+	}
+	return count, nil
+}

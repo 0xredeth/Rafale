@@ -3,6 +3,7 @@ package store
 import (
 	"time"
 
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -54,4 +55,21 @@ type Transfer struct {
 // TableName returns the table name for Transfer.
 func (Transfer) TableName() string {
 	return "transfers"
+}
+
+// Event is the generic event storage model with JSONB data.
+// All decoded events are automatically stored here for exploration and debugging.
+// Typed handlers remain optional - use them only when you need indexed query performance.
+type Event struct {
+	BaseEvent
+	ContractName string         `gorm:"type:varchar(100);index:idx_events_contract;not null"`
+	ContractAddr string         `gorm:"type:varchar(42);index:idx_events_address;not null"`
+	EventName    string         `gorm:"type:varchar(100);index:idx_events_event;not null"`
+	EventSig     string         `gorm:"type:varchar(66);index;not null"` // Topic[0] hash
+	Data         datatypes.JSON `gorm:"type:jsonb;not null"`
+}
+
+// TableName returns the table name for Event.
+func (Event) TableName() string {
+	return "events"
 }
