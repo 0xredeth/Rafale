@@ -6,7 +6,7 @@
 
 💨 **Rafale** — Lightweight Event Indexer for Linea zkEVM
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![Linea](https://img.shields.io/badge/Linea-zkEVM-000000?style=flat&logo=ethereum)](https://linea.build/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791?style=flat&logo=postgresql)](https://postgresql.org/)
@@ -414,7 +414,7 @@ Measured on local development machine (Apple Silicon, PostgreSQL local):
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE)
+AGPL-3.0 — see [LICENSE](LICENSE)
 
 ---
 
