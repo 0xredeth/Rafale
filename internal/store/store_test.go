@@ -186,28 +186,6 @@ func TestEventStruct(t *testing.T) {
 	require.Equal(t, "0xddf252ad", event.EventSig)
 }
 
-func TestSyncStatusStruct(t *testing.T) {
-	ss := SyncStatus{
-		Contract:        "USDC",
-		LastBlockNumber: 5000000,
-		LastBlockHash:   "0xabc",
-	}
-
-	require.Equal(t, "USDC", ss.Contract)
-	require.Equal(t, uint64(5000000), ss.LastBlockNumber)
-	require.Equal(t, "0xabc", ss.LastBlockHash)
-}
-
-func TestIndexerMetaStruct(t *testing.T) {
-	im := IndexerMeta{
-		Key:   "start_block",
-		Value: "1000000",
-	}
-
-	require.Equal(t, "start_block", im.Key)
-	require.Equal(t, "1000000", im.Value)
-}
-
 // --- Query Struct Tests ---
 
 func TestTransferQueryStruct(t *testing.T) {
@@ -278,7 +256,7 @@ func TestStoreMigrate(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.teardown(t)
 
-	err := ts.store.Migrate(&Transfer{}, &Event{}, &SyncStatus{}, &IndexerMeta{})
+	err := ts.store.Migrate(&Transfer{}, &Event{})
 	require.NoError(t, err)
 
 	// Verify tables exist

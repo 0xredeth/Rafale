@@ -104,8 +104,6 @@ func New(cfg *config.Config, broadcaster *pubsub.Broadcaster) (*Engine, error) {
 
 	// Auto-migrate event tables
 	if err := db.Migrate(
-		&store.SyncStatus{},
-		&store.IndexerMeta{},
 		&store.Event{},
 		&store.Transfer{},
 	); err != nil {

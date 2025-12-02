@@ -28,21 +28,6 @@ func (b *BaseEvent) BeforeCreate(_ *gorm.DB) error {
 	return nil
 }
 
-// SyncStatus represents the synchronization status for the indexer.
-type SyncStatus struct {
-	Contract        string    `gorm:"primaryKey;type:varchar(100)"`
-	LastBlockNumber uint64    `gorm:"not null"`
-	LastBlockHash   string    `gorm:"type:varchar(66)"`
-	UpdatedAt       time.Time `gorm:"autoUpdateTime"`
-}
-
-// IndexerMeta stores metadata about the indexer instance.
-type IndexerMeta struct {
-	Key       string    `gorm:"primaryKey;type:varchar(100)"`
-	Value     string    `gorm:"type:text"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime"`
-}
-
 // Transfer represents an ERC20 Transfer event.
 // Stores USDC transfers on Linea with indexed fields for efficient queries.
 type Transfer struct {

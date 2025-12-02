@@ -111,7 +111,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Debug().Err(err).Msg("health check write failed")
+		}
 	})
 
 	addr := fmt.Sprintf(":%d", s.cfg.Server.GraphQLPort)
