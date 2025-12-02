@@ -18,10 +18,6 @@
 
 ---
 
-> ⚠️ **Work in Progress** — This project is under active development. Features, APIs, and performance numbers are estimates and subject to change. Not production-ready yet.
-
----
-
 ## Overview
 
 Rafale is a minimal, high-performance blockchain event indexer built specifically for Linea zkEVM. It indexes smart contract events into PostgreSQL with TimescaleDB and exposes them via a type-safe GraphQL API.
@@ -59,7 +55,7 @@ For sub-second trading data, query the sequencer directly. For everything else, 
 
 ## Features
 
-### v1.0 (Current Target)
+### v1.0 ✅ Complete
 
 - ✅ **Hybrid Auto-Handler System** — zero-config event indexing with optional typed handlers
 - ✅ **Any Contract, Any Event** — works with DEX, NFT, lending, governance - not just ERC20
@@ -67,16 +63,16 @@ For sub-second trading data, query the sequencer directly. For everything else, 
 - ✅ **Unified sync loop** — no historical vs live distinction
 - ✅ **Minimal config** — network presets deduce most values
 - ✅ **Single binary** — `--watch` flag for dev mode
-- ✅ **GraphQL only** — no gRPC complexity
+- ✅ **GraphQL API** — queries + real-time subscriptions via WebSocket
 - ✅ **TimescaleDB** — hypertables for time-series event data
 - ✅ **Circuit breaker** — RPC resilience with exponential backoff
+- ✅ **Prometheus metrics** — full observability out of the box
 
 ### v2.0 (Roadmap)
 
 - 🔄 Blob-based indexing via EIP-4844
 - 🔄 Conflation-aware syncing
 - 🔄 Shnarf-based caching
-- 🔄 WebSocket streaming
 
 ---
 
@@ -213,15 +209,19 @@ Decoded Event
 
 ```
 rafale/
-├── cmd/rafale/main.go       # CLI entry point
+├── cmd/rafale/              # CLI entry point + commands
 ├── pkg/
 │   ├── config/              # Viper config + network presets
-│   ├── engine/              # Unified sync loop
-│   ├── handler/             # Handler registry + context
-│   ├── rpc/                 # Linea RPC client + circuit breaker
+│   ├── decoder/             # ABI event decoding
+│   └── handler/             # Handler registry + context
+├── internal/
+│   ├── api/                 # GraphQL server + resolvers
+│   ├── codegen/             # Code generation templates
+│   ├── engine/              # Unified sync loop + metrics
+│   ├── pubsub/              # Real-time event broadcasting
+│   ├── rpc/                 # Linea RPC client
 │   ├── store/               # GORM + PostgreSQL + TimescaleDB
-│   └── api/graphql/         # gqlgen server
-├── generated/               # Code-generated bindings
+│   └── watcher/             # Hot-reload file watcher
 ├── abis/                    # Contract ABIs
 └── rafale.yaml              # Config file
 ```
@@ -229,6 +229,8 @@ rafale/
 ---
 
 ## Usage
+
+> 📖 For detailed usage instructions, see [use.md](use.md)
 
 ### Define Schema
 
@@ -371,10 +373,10 @@ Measured on local development machine (Apple Silicon, PostgreSQL local):
 
 | Metric | Rafale | Notes |
 |--------|--------|-------|
-| Binary | **33 MB** | Single Go binary, no dependencies |
+| Binary | **~33 MB** | Single Go binary, no dependencies |
 | Memory | **~30 MB** | Idle indexer with handlers loaded |
 | Startup | **<1s** | Cold start to first block fetch |
-| Codebase | **~10K LOC** | 29 Go source files |
+| Codebase | **~14K LOC** | 39 Go source files |
 | Events/block | **40+** | Varies by contract activity |
 
 > 💡 **Lightweight by design** — Rafale uses minimal memory compared to Node.js-based indexers (typically 200-500MB+). The single 33MB binary includes everything needed to run.
