@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover lint audit run clean docker help
+.PHONY: build test test-race test-cover lint audit version run clean docker help
 
 # Build variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -39,6 +39,12 @@ audit:
 	go vet ./...
 	golangci-lint run
 	govulncheck ./...
+
+## version: Show version info
+version:
+	@echo "Version: $(VERSION)"
+	@echo "Commit:  $(COMMIT)"
+	@echo "Date:    $(DATE)"
 
 ## run: Run the indexer
 run: build
